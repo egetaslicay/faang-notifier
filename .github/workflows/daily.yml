@@ -6,6 +6,15 @@ on:
     - cron: "0 9 * * *"
   workflow_dispatch: {}   # allows manual runs from the Actions tab
 
+# Needed so the job can commit the updated seen_jobs.json back to the repo.
+permissions:
+  contents: write
+
+# Avoid overlapping runs racing to push state.
+concurrency:
+  group: faang-notifier
+  cancel-in-progress: false
+
 jobs:
   notify:
     runs-on: ubuntu-latest
@@ -27,3 +36,15 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
         run: python faang_notifier.py
+
+      - name: Persist seen jobs
+        run: |
+          if [[ -n "$(git status --porcelain seen_jobs.json)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add seen_jobs.json
+            git commit -m "Update seen jobs [skip ci]"
+            git push
+          else
+            echo "No change to seen_jobs.json"
+          fi

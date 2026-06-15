@@ -30,13 +30,13 @@ EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER")
 # Anything under these ### headers gets tracked; everything else is ignored
 WATCHED_SECTIONS = ["faang", "quant"]
 
-# Which markdown files to scan (relative to repo root)
+# Which markdown files to scan (relative to repo root).
+# Internship listings only — New Grad files are intentionally excluded.
+#   README.md      -> 2026 USA SWE Internships
+#   INTERN_INTL.md -> 2026 International SWE Internships
 FILES_TO_WATCH = [
     "README.md",
-    "INTERN_USA.md",
     "INTERN_INTL.md",
-    "NEW_GRAD_USA.md",
-    "NEW_GRAD_INTL.md",
 ]
 
 REPO = "speedyapply/2026-SWE-College-Jobs"
