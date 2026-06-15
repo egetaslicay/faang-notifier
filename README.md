@@ -78,4 +78,4 @@ All knobs are near the top of [`faang_notifier.py`](faang_notifier.py):
 
 ## License
 
-MIT — do whatever you like.
+MIT 
