@@ -2,8 +2,8 @@ name: Daily FAANG Notifier
 
 on:
   schedule:
-    # Runs once an hour, at the top of every hour (UTC)
-    - cron: "0 * * * *"
+    # Runs every 5 minutes (the GitHub Actions minimum cadence)
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}   # allows manual runs from the Actions tab
 
 # Needed so the job can commit the updated seen_jobs.json back to the repo.
