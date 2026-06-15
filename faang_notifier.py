@@ -72,29 +72,50 @@ def parse_jobs_from_markdown(content, source_file):
         if not line.startswith("|"):
             continue
 
-        cols = [c.strip() for c in line.split("|") if c.strip()]
-        if len(cols) < 3:
+        # Keep blank cells so column positions stay stable across files
+        # (README has a Salary column, INTERN_INTL does not).
+        cells = [c.strip() for c in line.split("|")]
+        if cells and cells[0] == "":
+            cells = cells[1:]
+        if cells and cells[-1] == "":
+            cells = cells[:-1]
+        if len(cells) < 3:
             continue
 
-        if cols[0].startswith("-") or cols[0].lower() in ("company", ""):
+        # Skip the header row and the |---|---| separator row.
+        if cells[0].startswith("-") or cells[0].lower() in ("company", ""):
             continue
 
-        company = re.sub(r"\[.*?\]\(.*?\)", "", cols[0]).strip()
+        company = re.sub(r"\[.*?\]\(.*?\)", "", cells[0])
+        company = re.sub(r"<[^>]+>", "", company)
         company = re.sub(r"[*_`]", "", company).strip()
-        company = re.sub(r"<[^>]+>", "", company).strip()
 
-        role = cols[1] if len(cols) > 1 else ""
-        role = re.sub(r"\[.*?\]\(.*?\)", "", role).strip()
+        role = cells[1] if len(cells) > 1 else ""
+        role = re.sub(r"\[.*?\]\(.*?\)", "", role)
         role = re.sub(r"<[^>]+>", "", role).strip()
 
-        link_match = re.search(r"\((https?://[^\)]+)\)", line)
+        # The "Posting" cell wraps an Apply image: href="URL"><img ...>.
+        # That href is the application link (distinct from the company
+        # website link in the first column). Fall back to any href, then
+        # to a markdown-style (url) for good measure.
+        link_match = (
+            re.search(r'href="(https?://[^"]+)"\s*>\s*<img', line)
+            or re.search(r'href="(https?://[^"]+)"', line)
+            or re.search(r"\((https?://[^\)]+)\)", line)
+        )
         link = link_match.group(1) if link_match else ""
+
+        # "Age" is always the last column (e.g. "4d", "2mo", "1y").
+        age = cells[-1]
+        if not re.match(r"^\d+\s*(d|h|w|mo|m|y|yr|day|days)$", age, re.IGNORECASE):
+            age = ""
 
         if company:
             jobs.append({
                 "company": company,
                 "role": role,
                 "link": link,
+                "age": age,
                 "source": source_file,
             })
 
@@ -125,15 +146,16 @@ def send_email(new_jobs):
 
     rows = ""
     for j in new_jobs:
+        age = j.get("age", "")
         link_text = f'<a href="{j["link"]}">Apply</a>' if j["link"] else "No link"
-        rows += f"<tr><td>{j['company']}</td><td>{j['role']}</td><td>{j['source']}</td><td>{link_text}</td></tr>"
+        rows += f"<tr><td>{j['company']}</td><td>{j['role']}</td><td>{age}</td><td>{j['source']}</td><td>{link_text}</td></tr>"
 
     html = f"""
     <html><body>
     <h2>New FAANG/Target Company Jobs</h2>
     <p>Found {len(new_jobs)} new posting(s) as of {datetime.now().strftime('%Y-%m-%d %H:%M')}:</p>
     <table border="1" cellpadding="6" cellspacing="0">
-        <tr><th>Company</th><th>Role</th><th>Source</th><th>Link</th></tr>
+        <tr><th>Company</th><th>Role</th><th>Age</th><th>Source</th><th>Link</th></tr>
         {rows}
     </table>
     <p><a href="https://github.com/{REPO}">View full list on GitHub</a></p>
