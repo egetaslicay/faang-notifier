@@ -1,7 +1,8 @@
 """
 FAANG Job Notifier
-Polls the speedyapply 2026-SWE-College-Jobs GitHub repo for new FAANG postings
-and sends you an email when something new drops.
+Polls two sources for new postings and emails you when something new drops:
+  - the speedyapply 2026-SWE-College-Jobs GitHub repo (FAANG/quant sections)
+  - curated Simplify.jobs list pages
 
 Setup:
 1. pip install requests
@@ -40,7 +41,20 @@ FILES_TO_WATCH = [
 ]
 
 REPO = "speedyapply/2026-SWE-College-Jobs"
+
+# Curated Simplify.jobs list pages. These are already filtered to big tech, so
+# WATCHED_SECTIONS does not apply -- every posting on them is tracked.
+SIMPLIFY_LISTS = [
+    "https://simplify.jobs/l/List-Big-Tech-SWE-Internships",
+]
+
 SEEN_FILE = "seen_jobs.json"   # local file to track what you've already been notified about
+
+# The default python-requests user agent gets blocked by some hosts.
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
 
 # ── GITHUB FETCHING ─────────────────────────────────────────────────────────
 
@@ -121,6 +135,98 @@ def parse_jobs_from_markdown(content, source_file):
 
     return jobs
 
+# ── SIMPLIFY.JOBS FETCHING ───────────────────────────────────────────────────
+
+NEXT_DATA_RE = re.compile(
+    r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+    re.DOTALL,
+)
+
+
+def format_locations(value, limit=3):
+    """
+    `locations` comes back as either a plain string ("Phoenix, AZ, USA") or a
+    list of them, so normalise both. A few postings list 8+ offices, which would
+    swamp the email, hence the cap.
+    """
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+
+    places = [str(v).strip() for v in value if str(v).strip()]
+    if len(places) > limit:
+        return " / ".join(places[:limit]) + f" (+{len(places) - limit} more)"
+    return " / ".join(places)
+
+
+def format_age(updated_epoch):
+    """
+    Simplify gives an epoch timestamp; the GitHub rows give a string like "4d".
+    Convert to the same shape so both sources fill the Age column.
+    """
+    if not updated_epoch:
+        return ""
+    try:
+        delta = datetime.now() - datetime.fromtimestamp(float(updated_epoch))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ""
+
+    days = delta.days
+    if days < 0:
+        return ""
+    if days == 0:
+        return f"{max(delta.seconds // 3600, 1)}h"
+    if days < 30:
+        return f"{days}d"
+    if days < 365:
+        return f"{days // 30}mo"
+    return f"{days // 365}y"
+
+
+def fetch_simplify_jobs(list_url):
+    """
+    Simplify list pages are Next.js, so every posting is already embedded in the
+    page as JSON under __NEXT_DATA__. Reading that is far less brittle than
+    scraping the rendered DOM (which would need a real browser anyway).
+
+    Note this sees the postings in the initial page payload, not everything
+    behind pagination -- enough for a "what's new" alert.
+    """
+    r = requests.get(list_url, timeout=15, headers={"User-Agent": USER_AGENT})
+    r.raise_for_status()
+
+    match = NEXT_DATA_RE.search(r.text)
+    if not match:
+        raise ValueError("no __NEXT_DATA__ found -- page layout may have changed")
+
+    page_props = json.loads(match.group(1))["props"]["pageProps"]
+
+    # Name the source after the list itself so emails say where a job came from.
+    source = (page_props.get("jobList") or {}).get("title") or list_url
+
+    jobs = []
+    for hit in page_props.get("initialJobHits", []):
+        company = (hit.get("company_name") or "").strip()
+        if not company:
+            continue
+
+        # /p/<posting_id> redirects to the canonical posting URL.
+        posting_id = hit.get("posting_id") or hit.get("id")
+        link = f"https://simplify.jobs/p/{posting_id}" if posting_id else list_url
+
+        jobs.append({
+            "id": posting_id,
+            "company": company,
+            "role": (hit.get("title") or "").strip(),
+            "location": format_locations(hit.get("locations")),
+            "age": format_age(hit.get("updated_date")),
+            "link": link,
+            "source": source,
+        })
+
+    return jobs
+
 # ── STATE TRACKING ───────────────────────────────────────────────────────────
 
 def load_seen():
@@ -136,7 +242,11 @@ def save_seen(seen):
 
 
 def job_id(job):
-    # unique key per job so we don't notify twice
+    # unique key per job so we don't notify twice. Simplify supplies a stable
+    # posting id; the GitHub rows have none, so they keep the original
+    # company/role/source key -- which also keeps existing seen_jobs.json valid.
+    if job.get("id"):
+        return f"simplify::{job['id']}"
     return f"{job['company']}::{job['role']}::{job['source']}"
 
 # ── EMAIL ────────────────────────────────────────────────────────────────────
@@ -147,15 +257,19 @@ def send_email(new_jobs):
     rows = ""
     for j in new_jobs:
         age = j.get("age", "")
+        location = j.get("location") or "&mdash;"
         link_text = f'<a href="{j["link"]}">Apply</a>' if j["link"] else "No link"
-        rows += f"<tr><td>{j['company']}</td><td>{j['role']}</td><td>{age}</td><td>{j['source']}</td><td>{link_text}</td></tr>"
+        rows += (
+            f"<tr><td>{j['company']}</td><td>{j['role']}</td><td>{location}</td>"
+            f"<td>{age}</td><td>{j['source']}</td><td>{link_text}</td></tr>"
+        )
 
     html = f"""
     <html><body>
     <h2>New FAANG/Target Company Jobs</h2>
     <p>Found {len(new_jobs)} new posting(s) as of {datetime.now().strftime('%Y-%m-%d %H:%M')}:</p>
     <table border="1" cellpadding="6" cellspacing="0">
-        <tr><th>Company</th><th>Role</th><th>Age</th><th>Source</th><th>Link</th></tr>
+        <tr><th>Company</th><th>Role</th><th>Location</th><th>Age</th><th>Source</th><th>Link</th></tr>
         {rows}
     </table>
     <p><a href="https://github.com/{REPO}">View full list on GitHub</a></p>
@@ -197,6 +311,14 @@ def run():
             print(f"  {filename}: {len(jobs)} total rows parsed")
         except Exception as e:
             print(f"  WARNING: could not fetch {filename}: {e}")
+
+    for list_url in SIMPLIFY_LISTS:
+        try:
+            jobs = fetch_simplify_jobs(list_url)
+            all_jobs.extend(jobs)
+            print(f"  {list_url}: {len(jobs)} postings parsed")
+        except Exception as e:
+            print(f"  WARNING: could not fetch {list_url}: {e}")
 
     new_jobs = [j for j in all_jobs if job_id(j) not in seen]
 
